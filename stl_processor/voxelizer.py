@@ -21,15 +21,15 @@ class Voxelizer:
         min_coords = triangles.min(axis=(0, 1))
         max_coords = triangles.max(axis=(0, 1))
         
-        # Calculate scaling factor
-        scale = (self.resolution - 2) / np.max(max_coords - min_coords)
+        # Calculate scaling factor with additional padding
+        scale = (self.resolution - 4) / np.max(max_coords - min_coords)  # Increased padding
         
         # Vectorized triangle processing
         verts = (triangles - min_coords) * scale
-        verts = np.clip(verts, 0, self.resolution - 2)
+        verts = np.clip(verts, 0, self.resolution - 4)  # Adjusted clipping
         
-        # Process triangles in batches
-        batch_size = 1000
+        # Process triangles in smaller batches for better memory management
+        batch_size = 500  # Reduced batch size for higher resolution
         for i in range(0, len(triangles), batch_size):
             batch_triangles = triangles[i:i + batch_size]
             batch_verts = verts[i:i + batch_size]
@@ -47,15 +47,15 @@ class Voxelizer:
                 if not (x_range and y_range and z_range):
                     continue
                 
-                # Create mesh grid for points with higher sampling density
+                # Create mesh grid for points with optimized sampling density
                 x, y, z = np.meshgrid(x_range, y_range, z_range, indexing='ij')
                 points = np.stack([x, y, z], axis=-1).reshape(-1, 3)
                 
-                # Increased sub-voxel sampling points for better surface detection
+                # Optimized sub-voxel sampling points
                 offsets = np.array([[dx, dy, dz] 
-                                  for dx in [0.2, 0.4, 0.6, 0.8]
-                                  for dy in [0.2, 0.4, 0.6, 0.8]
-                                  for dz in [0.2, 0.4, 0.6, 0.8]])
+                                  for dx in [0.25, 0.5, 0.75]  # Simplified sampling points
+                                  for dy in [0.25, 0.5, 0.75]
+                                  for dz in [0.25, 0.5, 0.75]])
                 
                 points = points[:, None] + offsets
                 points = points.reshape(-1, 3)
@@ -63,24 +63,23 @@ class Voxelizer:
                 # Convert to original coordinate system
                 points = points / scale + min_coords
                 
-                # Vectorized point-triangle distance check with reduced threshold
-                mask = self._points_near_triangle_vectorized(points, triangle, threshold=0.3)
-                mask = mask.reshape(-1, 64).any(axis=1)  # Any sub-point hits (increased from 8)
+                # Vectorized point-triangle distance check
+                mask = self._points_near_triangle_vectorized(points, triangle, threshold=0.25)  # Adjusted threshold
+                mask = mask.reshape(-1, 27).any(axis=1)  # Adjusted for new sampling count
                 
                 if mask.any():
-                    indices = (points[::64][mask] - min_coords) * scale
+                    indices = (points[::27][mask] - min_coords) * scale
                     indices = np.clip(indices, 0, self.resolution - 1).astype(int)
                     grid[indices[:, 0], indices[:, 1], indices[:, 2]] = True
         
         # Enhanced surface processing and filling
-        # First, ensure surface is well-defined
         struct = np.ones((3, 3, 3))
         grid = ndimage.binary_dilation(grid, structure=struct, iterations=1)
         
         # Fill internal volumes
         filled_grid = ndimage.binary_fill_holes(grid)
         
-        # Multiple passes of dilation and erosion to smooth the surface while maintaining volume
+        # Optimized smoothing passes
         for _ in range(2):
             filled_grid = ndimage.binary_closing(filled_grid, structure=struct, iterations=1)
             filled_grid = ndimage.binary_dilation(filled_grid, structure=struct, iterations=1)

@@ -44,12 +44,12 @@ class STLReader:
         max_size = max(size_x, size_y, size_z)
         
         # Calculate resolution based on model size
-        # Increased base resolution for better detail
-        base_resolution = 64  # Increased from 40
+        # Increased base resolution for higher detail
+        base_resolution = 128  # Increased from 64 to 128
         
-        # Adjust based on model complexity with higher factor
+        # Adjust based on model complexity with optimized factor
         vertex_count = len(self.mesh.vectors.reshape(-1, 3))
-        complexity_factor = min(2.0, max(1.0, np.log10(vertex_count) / 4))  # Increased scaling
+        complexity_factor = min(1.5, max(1.0, np.log10(vertex_count) / 5))  # Adjusted scaling factor
         
         target_resolution = int(base_resolution * complexity_factor)
         
