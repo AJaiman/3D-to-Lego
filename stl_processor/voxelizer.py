@@ -47,14 +47,15 @@ class Voxelizer:
                 if not (x_range and y_range and z_range):
                     continue
                 
-                # Create mesh grid for points
+                # Create mesh grid for points with higher sampling density
                 x, y, z = np.meshgrid(x_range, y_range, z_range, indexing='ij')
                 points = np.stack([x, y, z], axis=-1).reshape(-1, 3)
                 
-                # Add sub-voxel sampling points
-                offsets = np.array([[dx, dy, dz] for dx in [0.25, 0.75] 
-                                                for dy in [0.25, 0.75] 
-                                                for dz in [0.25, 0.75]])
+                # Increased sub-voxel sampling points for better surface detection
+                offsets = np.array([[dx, dy, dz] 
+                                  for dx in [0.2, 0.4, 0.6, 0.8]
+                                  for dy in [0.2, 0.4, 0.6, 0.8]
+                                  for dz in [0.2, 0.4, 0.6, 0.8]])
                 
                 points = points[:, None] + offsets
                 points = points.reshape(-1, 3)
@@ -62,25 +63,33 @@ class Voxelizer:
                 # Convert to original coordinate system
                 points = points / scale + min_coords
                 
-                # Vectorized point-triangle distance check
-                mask = self._points_near_triangle_vectorized(points, triangle)
-                mask = mask.reshape(-1, 8).any(axis=1)  # Any sub-point hits
+                # Vectorized point-triangle distance check with reduced threshold
+                mask = self._points_near_triangle_vectorized(points, triangle, threshold=0.3)
+                mask = mask.reshape(-1, 64).any(axis=1)  # Any sub-point hits (increased from 8)
                 
                 if mask.any():
-                    indices = (points[::8][mask] - min_coords) * scale
+                    indices = (points[::64][mask] - min_coords) * scale
                     indices = np.clip(indices, 0, self.resolution - 1).astype(int)
                     grid[indices[:, 0], indices[:, 1], indices[:, 2]] = True
         
-        # Connect nearby voxels and smooth the surface
+        # Enhanced surface processing and filling
+        # First, ensure surface is well-defined
         struct = np.ones((3, 3, 3))
         grid = ndimage.binary_dilation(grid, structure=struct, iterations=1)
-        grid = ndimage.binary_fill_holes(grid)
-        grid = ndimage.binary_closing(grid, structure=struct, iterations=1)
+        
+        # Fill internal volumes
+        filled_grid = ndimage.binary_fill_holes(grid)
+        
+        # Multiple passes of dilation and erosion to smooth the surface while maintaining volume
+        for _ in range(2):
+            filled_grid = ndimage.binary_closing(filled_grid, structure=struct, iterations=1)
+            filled_grid = ndimage.binary_dilation(filled_grid, structure=struct, iterations=1)
+            filled_grid = ndimage.binary_erosion(filled_grid, structure=struct, iterations=1)
         
         # Remove floating voxels
-        self._remove_floating_voxels(grid)
+        self._remove_floating_voxels(filled_grid)
         
-        self.voxels = grid
+        self.voxels = filled_grid
         return self.voxels
     
     def _remove_floating_voxels(self, grid):
@@ -99,8 +108,8 @@ class Voxelizer:
         # Keep only the largest component
         grid[:] = (labeled_array == largest_component)
 
-    def _points_near_triangle_vectorized(self, points, triangle, threshold=0.4):
-        """Vectorized version of point-triangle distance check"""
+    def _points_near_triangle_vectorized(self, points, triangle, threshold=0.3):
+        """Vectorized version of point-triangle distance check with adjusted threshold"""
         # Calculate triangle normal
         v1 = triangle[1] - triangle[0]
         v2 = triangle[2] - triangle[0]

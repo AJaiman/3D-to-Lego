@@ -44,13 +44,12 @@ class STLReader:
         max_size = max(size_x, size_y, size_z)
         
         # Calculate resolution based on model size
-        # Aim for around 32-48 voxels for the largest dimension
-        # This will make each voxel roughly the size of a LEGO stud
-        base_resolution = 40
+        # Increased base resolution for better detail
+        base_resolution = 64  # Increased from 40
         
-        # Small adjustment based on model complexity
+        # Adjust based on model complexity with higher factor
         vertex_count = len(self.mesh.vectors.reshape(-1, 3))
-        complexity_factor = min(1.2, max(0.8, np.log10(vertex_count) / 5))
+        complexity_factor = min(2.0, max(1.0, np.log10(vertex_count) / 4))  # Increased scaling
         
         target_resolution = int(base_resolution * complexity_factor)
         
