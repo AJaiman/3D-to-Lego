@@ -22,34 +22,57 @@ class Voxelizer:
         max_coords = triangles.max(axis=(0, 1))
         
         # Calculate scaling factor
-        scale = (self.resolution - 1) / np.max(max_coords - min_coords)
+        scale = (self.resolution - 2) / np.max(max_coords - min_coords)
         
-        # Process each triangle with higher sampling
-        for triangle in triangles:
-            # Scale and translate vertices to voxel coordinates
-            verts = (triangle - min_coords) * scale
-            verts = np.clip(verts, 0, self.resolution - 1)
+        # Vectorized triangle processing
+        verts = (triangles - min_coords) * scale
+        verts = np.clip(verts, 0, self.resolution - 2)
+        
+        # Process triangles in batches
+        batch_size = 1000
+        for i in range(0, len(triangles), batch_size):
+            batch_triangles = triangles[i:i + batch_size]
+            batch_verts = verts[i:i + batch_size]
             
-            # Get triangle bounds with padding for better surface capture
-            mins = np.min(verts, axis=0).astype(int) - 1
-            maxs = np.max(verts, axis=0).astype(int) + 2
+            # Get bounds for all triangles in batch
+            mins = np.floor(np.min(batch_verts, axis=1)).astype(int)
+            maxs = np.ceil(np.max(batch_verts, axis=1)).astype(int)
             
-            # Sample points more densely around the triangle
-            for x in range(max(0, mins[0]), min(self.resolution, maxs[0])):
-                for y in range(max(0, mins[1]), min(self.resolution, maxs[1])):
-                    for z in range(max(0, mins[2]), min(self.resolution, maxs[2])):
-                        # Check multiple points within each voxel for better surface detection
-                        for dx in [0.25, 0.75]:
-                            for dy in [0.25, 0.75]:
-                                for dz in [0.25, 0.75]:
-                                    point = np.array([x + dx, y + dy, z + dz]) / scale + min_coords
-                                    if self._point_near_triangle(point, triangle, threshold=0.4):
-                                        grid[x, y, z] = True
+            # Process each triangle in batch
+            for triangle, triangle_mins, triangle_maxs in zip(batch_triangles, mins, maxs):
+                x_range = range(max(0, triangle_mins[0]), min(self.resolution - 1, triangle_maxs[0] + 1))
+                y_range = range(max(0, triangle_mins[1]), min(self.resolution - 1, triangle_maxs[1] + 1))
+                z_range = range(max(0, triangle_mins[2]), min(self.resolution - 1, triangle_maxs[2] + 1))
+                
+                if not (x_range and y_range and z_range):
+                    continue
+                
+                # Create mesh grid for points
+                x, y, z = np.meshgrid(x_range, y_range, z_range, indexing='ij')
+                points = np.stack([x, y, z], axis=-1).reshape(-1, 3)
+                
+                # Add sub-voxel sampling points
+                offsets = np.array([[dx, dy, dz] for dx in [0.25, 0.75] 
+                                                for dy in [0.25, 0.75] 
+                                                for dz in [0.25, 0.75]])
+                
+                points = points[:, None] + offsets
+                points = points.reshape(-1, 3)
+                
+                # Convert to original coordinate system
+                points = points / scale + min_coords
+                
+                # Vectorized point-triangle distance check
+                mask = self._points_near_triangle_vectorized(points, triangle)
+                mask = mask.reshape(-1, 8).any(axis=1)  # Any sub-point hits
+                
+                if mask.any():
+                    indices = (points[::8][mask] - min_coords) * scale
+                    indices = np.clip(indices, 0, self.resolution - 1).astype(int)
+                    grid[indices[:, 0], indices[:, 1], indices[:, 2]] = True
         
         # Connect nearby voxels and smooth the surface
         struct = np.ones((3, 3, 3))
-        
-        # Multiple passes of dilation and erosion to better capture rounded surfaces
         grid = ndimage.binary_dilation(grid, structure=struct, iterations=1)
         grid = ndimage.binary_fill_holes(grid)
         grid = ndimage.binary_closing(grid, structure=struct, iterations=1)
@@ -76,8 +99,8 @@ class Voxelizer:
         # Keep only the largest component
         grid[:] = (labeled_array == largest_component)
 
-    def _point_near_triangle(self, point, triangle, threshold=0.4):
-        """Check if a point is near a triangle"""
+    def _points_near_triangle_vectorized(self, points, triangle, threshold=0.4):
+        """Vectorized version of point-triangle distance check"""
         # Calculate triangle normal
         v1 = triangle[1] - triangle[0]
         v2 = triangle[2] - triangle[0]
@@ -85,47 +108,40 @@ class Voxelizer:
         normal_length = np.linalg.norm(normal)
         
         if normal_length < 1e-10:
-            return False
+            return np.zeros(len(points), dtype=bool)
         
         normal = normal / normal_length
         
-        # Calculate distance from point to triangle plane
-        v = point - triangle[0]
-        dist = abs(np.dot(v, normal))
+        # Calculate distances from points to triangle plane
+        v = points - triangle[0]
+        dists = np.abs(np.dot(v, normal))
         
-        if dist > threshold:
-            return False
+        # Early exit for points too far from plane
+        mask = dists <= threshold
+        if not mask.any():
+            return np.zeros(len(points), dtype=bool)
         
-        # Project point onto triangle plane
-        proj = point - dist * normal
+        # Project points onto triangle plane
+        close_points = points[mask]
+        proj = close_points - dists[mask, None] * normal
         
-        # Check if projection is inside triangle or near edges
+        # Check if projections are inside triangle or near edges
         edge0 = triangle[1] - triangle[0]
         edge1 = triangle[2] - triangle[1]
         edge2 = triangle[0] - triangle[2]
+        
         C0 = proj - triangle[0]
         C1 = proj - triangle[1]
         C2 = proj - triangle[2]
         
-        # Check if point is inside triangle or close to edges
-        if (np.dot(np.cross(edge0, C0), normal) >= -threshold and
-            np.dot(np.cross(edge1, C1), normal) >= -threshold and
-            np.dot(np.cross(edge2, C2), normal) >= -threshold):
-            return True
+        # Vectorized inside-triangle test
+        inside = (np.dot(np.cross(edge0, C0), normal) >= -threshold) & \
+                (np.dot(np.cross(edge1, C1), normal) >= -threshold) & \
+                (np.dot(np.cross(edge2, C2), normal) >= -threshold)
         
-        # Check distance to edges
-        for i in range(3):
-            p1 = triangle[i]
-            p2 = triangle[(i + 1) % 3]
-            edge = p2 - p1
-            edge_length = np.linalg.norm(edge)
-            if edge_length > 0:
-                t = max(0, min(1, np.dot(point - p1, edge) / edge_length**2))
-                closest = p1 + t * edge
-                if np.linalg.norm(point - closest) < threshold:
-                    return True
-        
-        return False
+        result = np.zeros(len(points), dtype=bool)
+        result[mask] = inside
+        return result
     
     def _create_cube_faces(self, x, y, z):
         """Create faces for a single voxel cube"""
