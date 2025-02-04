@@ -1,0 +1,5 @@
+numpy>=1.20.0
+scipy>=1.7.0
+numpy-stl>=2.16.0
+tkinter  # Usually comes with Python installation
+pathlib  # Built into Python 3, no need to install separately 
